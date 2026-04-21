@@ -2,8 +2,10 @@
   "name": "pumpfun-scan",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "format": "prettier --write \"src/**/*.ts\""
   },
@@ -11,26 +13,28 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@solana/spl-token": "^0.4.13",
+    "@jup-ag/api": "^6.0.48",
+    "@pump-fun/pump-sdk": "^1.32.0",
+    "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
-    "bn.js": "^5.2.2",
+    "bn.js": "^5.2.3",
     "bs58": "^6.0.0",
     "decimal.js": "^10.6.0",
-    "gill": "^0.10.3",
-    "javascript-time-ago": "^2.5.12",
+    "gill": "^0.14.0",
+    "javascript-time-ago": "^2.6.4",
     "millify": "^6.1.0",
     "table": "^6.9.0"
   },
   "devDependencies": {
     "@types/bn.js": "^5.2.0",
-    "@types/node": "^24.3.0",
-    "@typescript-eslint/eslint-plugin": "^8.43.0",
-    "@typescript-eslint/parser": "^8.43.0",
-    "eslint": "^9.35.0",
+    "@types/node": "^25.6.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.0",
+    "@typescript-eslint/parser": "^8.59.0",
+    "eslint": "^10.2.1",
     "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-prettier": "^5.5.4",
-    "prettier": "^3.6.2",
+    "eslint-plugin-prettier": "^5.5.5",
+    "prettier": "^3.8.3",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.2"
+    "typescript": "^6.0.3"
   }
 }

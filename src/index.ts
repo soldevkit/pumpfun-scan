@@ -7,11 +7,11 @@ import { PumpfunGraduatedCoins } from './types';
 TimeAgo.addDefaultLocale(en);
 const timeAgo = new TimeAgo('en-US');
 
-const MIN_HOLDERS = 333;
+const MIN_HOLDERS = 33;
 const MAX_SNIPERS_PCT = 3;
 const MAX_TOP_HOLDERS_PCT = 33;
 const MIN_MC = 3333;
-const MC_ATH_THRESHOLD = 0.6; // 60%
+const MC_ATH_THRESHOLD = 0.5; // 50%
 
 (async () => {
   const res = await fetch(
@@ -21,6 +21,7 @@ const MC_ATH_THRESHOLD = 0.6; // 60%
 
   const printData: (string | number)[][] = [
     [
+      'Name',
       'Mint',
       'V (SOL)',
       'MC',
@@ -40,6 +41,7 @@ const MC_ATH_THRESHOLD = 0.6; // 60%
     ...data.coins
       .filter((coin) => coin.marketCap > coin.allTimeHighMarketCap * MC_ATH_THRESHOLD)
       .map((coin) => [
+        `${coin.name} (${coin.ticker})`,
         coin.coinMint,
         millify(coin.volume),
         millify(coin.marketCap) +
