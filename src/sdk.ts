@@ -1,3 +1,5 @@
+import fs from 'fs';
+import bs58 from 'bs58';
 import BN from 'bn.js';
 import { createJupiterApiClient } from '@jup-ag/api';
 import {
@@ -6,6 +8,7 @@ import {
   getBuyTokenAmountFromSolAmount,
   getSellSolAmountFromTokenAmount,
 } from '@pump-fun/pump-sdk';
+import { getAssociatedTokenAddressSync, NATIVE_MINT } from '@solana/spl-token';
 import {
   ComputeBudgetProgram,
   Connection,
@@ -17,21 +20,43 @@ import {
   TransactionSignature,
   VersionedTransaction,
 } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync, NATIVE_MINT } from '@solana/spl-token';
 
+import dotenv from 'dotenv';
+dotenv.config();
+
+const ZERO = new BN(0);
 const NATIVE_MINT_ADDRESS = NATIVE_MINT.toBase58();
-const RPC_URL = 'https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b';
+const RPC_URL = 'https://willie-l4msmu-fast-mainnet.helius-rpc.com';
 
 // RPC connection
 const connection = new Connection(RPC_URL, 'confirmed');
-const pumpSdk = new OnlinePumpSdk(connection);
 
+const pumpSdk = new OnlinePumpSdk(connection);
 const jupiterApi = createJupiterApiClient({ basePath: 'https://lite-api.jup.ag' });
 
-// Your wallet
-const wallet = Keypair.fromSecretKey(
-  Uint8Array.from(process.env.WALLET_KEYPAIR!), // your private key
-);
+const wallet = loadKeypair(process.env.WALLET_KEYPAIR!);
+
+export function loadKeypair(privateKey: string): Keypair {
+  // try to load privateKey as a filepath
+  let loadedKey: Uint8Array;
+  if (fs.existsSync(privateKey)) {
+    privateKey = fs.readFileSync(privateKey).toString();
+  }
+
+  if (privateKey.includes('[') && privateKey.includes(']')) {
+    loadedKey = Uint8Array.from(JSON.parse(privateKey));
+  } else if (privateKey.includes(',')) {
+    loadedKey = Uint8Array.from(privateKey.split(',').map((val) => Number(val)));
+  } else {
+    privateKey = privateKey.replace(/\s/g, '');
+    loadedKey = new Uint8Array(bs58.decode(privateKey));
+  }
+
+  const keypair = Keypair.fromSecretKey(Uint8Array.from(loadedKey));
+  console.log('loaded wallet:', keypair.publicKey.toBase58());
+
+  return keypair;
+}
 
 export async function getTokenProgram(mintPubkey: PublicKey): Promise<PublicKey> {
   const mintInfo = await connection.getAccountInfo(mintPubkey);
@@ -46,7 +71,7 @@ export async function getTokenAmount(mint: string): Promise<BN> {
     if (lamports > 0.05e9) {
       return new BN(lamports);
     } else {
-      return new BN(0);
+      return ZERO;
     }
   } else {
     const inputMintPubkey = new PublicKey(mint);
@@ -134,7 +159,29 @@ export async function jupiterSwap(
     },
   });
 
-  return connection.sendRawTransaction(Buffer.from(swapTransaction, 'base64'));
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+  const txBuff = Buffer.from(swapTransaction, 'base64');
+  const tx = VersionedTransaction.deserialize(txBuff);
+  tx.message.recentBlockhash = blockhash;
+  tx.sign([wallet]);
+
+  // send (fast path)
+  const signature = await connection.sendRawTransaction(tx.serialize(), {
+    skipPreflight: true,
+    maxRetries: 2,
+  });
+
+  // confirm (important for reliability)
+  await connection.confirmTransaction(
+    {
+      signature,
+      blockhash,
+      lastValidBlockHeight,
+    },
+    'confirmed',
+  );
+
+  return signature;
 }
 
 export async function buyToken(
@@ -149,28 +196,30 @@ export async function buyToken(
     lamports = new BN(Math.floor(solAmount * LAMPORTS_PER_SOL));
   }
 
+  if (lamports.eq(ZERO)) return;
+
   const mintPubkey = new PublicKey(mint);
   const tokenProgram = await getTokenProgram(mintPubkey);
 
   const [buyState, global, feeConfig] = await Promise.all([
-    pumpSdk.fetchBuyState(mintPubkey, wallet.publicKey),
+    pumpSdk.fetchBuyState(mintPubkey, wallet.publicKey, tokenProgram),
     pumpSdk.fetchGlobal(),
     pumpSdk.fetchFeeConfig(),
   ]);
-
-  const expectedTokens = getBuyTokenAmountFromSolAmount({
-    global,
-    feeConfig,
-    mintSupply: buyState.bondingCurve.tokenTotalSupply,
-    bondingCurve: buyState.bondingCurve,
-    amount: lamports,
-  });
-  console.log('Out amount:', expectedTokens.toNumber());
 
   if (buyState.bondingCurve.complete) {
     const signature = await jupiterSwap(NATIVE_MINT_ADDRESS, mint, lamports, slippage);
     console.log('txid:', signature);
   } else {
+    const expectedTokens = getBuyTokenAmountFromSolAmount({
+      global,
+      feeConfig,
+      mintSupply: buyState.bondingCurve.tokenTotalSupply,
+      bondingCurve: buyState.bondingCurve,
+      amount: lamports,
+    });
+    console.log('Out amount:', expectedTokens.toNumber());
+
     const buyIxs = await PUMP_SDK.buyInstructions({
       global,
       ...buyState,
@@ -199,11 +248,13 @@ export async function sellToken(
     amount = new BN(Math.floor(tokenAmount * 1e6));
   }
 
+  if (amount.eq(ZERO)) return;
+
   const mintPubkey = new PublicKey(mint);
   const tokenProgram = await getTokenProgram(mintPubkey);
 
   const [sellState, global, feeConfig] = await Promise.all([
-    pumpSdk.fetchSellState(mintPubkey, wallet.publicKey),
+    pumpSdk.fetchSellState(mintPubkey, wallet.publicKey, tokenProgram),
     pumpSdk.fetchGlobal(),
     pumpSdk.fetchFeeConfig(),
   ]);
@@ -230,6 +281,7 @@ export async function sellToken(
       solAmount: expectedLamports,
       slippage,
       mayhemMode: sellState.bondingCurve.isMayhemMode,
+      cashback: sellState.bondingCurve.isCashbackCoin,
       tokenProgram,
     });
 
