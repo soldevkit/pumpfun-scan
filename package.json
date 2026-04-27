@@ -9,6 +9,9 @@
     "buy": "node dist/buy.js",
     "sell": "node dist/sell.js",
     "dev": "ts-node src/index.ts",
+    "dev:export": "ts-node src/export.ts",
+    "dev:deposit": "ts-node src/deposit.ts",
+    "dev:withdraw": "ts-node src/withdraw.ts",
     "dev:buy": "ts-node src/buy.ts",
     "dev:sell": "ts-node src/sell.ts",
     "format": "prettier --write \"src/**/*.ts\""
@@ -21,12 +24,15 @@
     "@pump-fun/pump-sdk": "^1.32.0",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
+    "@solendprotocol/solend-sdk": "^0.14.26",
+    "@titanexchange/sdk-ts": "^0.1.3",
     "bn.js": "^5.2.3",
     "bs58": "^6.0.0",
     "decimal.js": "^10.6.0",
     "gill": "^0.14.0",
     "javascript-time-ago": "^2.6.4",
     "millify": "^6.1.0",
+    "privacycash": "^1.1.22",
     "table": "^6.9.0"
   },
   "devDependencies": {

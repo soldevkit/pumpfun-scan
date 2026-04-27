@@ -2,7 +2,7 @@ import { table } from 'table';
 import millify from 'millify';
 import TimeAgo from 'javascript-time-ago';
 import en from 'javascript-time-ago/locale/en';
-import { PumpfunGraduatedCoins } from './types';
+import { PumpfunGraduatedCoins } from './common/types';
 
 TimeAgo.addDefaultLocale(en);
 const timeAgo = new TimeAgo('en-US');

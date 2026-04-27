@@ -1,4 +1,4 @@
-import { sellToken } from './sdk';
+import { sellToken } from './common/sdk';
 
 const SELL_TOKEN_MINT: string = process.env.SELL_TOKEN_MINT!;
 const SELL_TOKEN_AMOUNT: number | undefined = process.env.SELL_TOKEN_AMOUNT

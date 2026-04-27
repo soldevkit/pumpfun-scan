@@ -1,28 +1,31 @@
-import fs from 'fs';
-import bs58 from 'bs58';
 import BN from 'bn.js';
+import bs58 from 'bs58';
+import { PrivacyCash } from 'privacycash';
 import { createJupiterApiClient } from '@jup-ag/api';
+import { SolendActionCore } from '@solendprotocol/solend-sdk';
 import {
   OnlinePumpSdk,
   PUMP_SDK,
   getBuyTokenAmountFromSolAmount,
   getSellSolAmountFromTokenAmount,
 } from '@pump-fun/pump-sdk';
-import { getAssociatedTokenAddressSync, NATIVE_MINT } from '@solana/spl-token';
+import { getAssociatedTokenAddressSync, NATIVE_MINT, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import {
   ComputeBudgetProgram,
   Connection,
-  Keypair,
   LAMPORTS_PER_SOL,
   PublicKey,
   TransactionInstruction,
   TransactionMessage,
   TransactionSignature,
   VersionedTransaction,
+  VersionedTransactionResponse,
 } from '@solana/web3.js';
 
 import dotenv from 'dotenv';
 dotenv.config();
+
+import { loadKeypair } from './helper';
 
 const ZERO = new BN(0);
 const NATIVE_MINT_ADDRESS = NATIVE_MINT.toBase58();
@@ -30,32 +33,22 @@ const RPC_URL = 'https://willie-l4msmu-fast-mainnet.helius-rpc.com';
 
 // RPC connection
 const connection = new Connection(RPC_URL, 'confirmed');
+const wallet = loadKeypair(process.env.WALLET_KEYPAIR!);
 
+const privacy = new PrivacyCash({ RPC_url: RPC_URL, owner: bs58.encode(wallet.secretKey) });
 const pumpSdk = new OnlinePumpSdk(connection);
 const jupiterApi = createJupiterApiClient({ basePath: 'https://lite-api.jup.ag' });
 
-const wallet = loadKeypair(process.env.WALLET_KEYPAIR!);
+export async function getTransactionResponse(
+  signature: TransactionSignature,
+): Promise<VersionedTransactionResponse> {
+  const tx = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0 });
 
-export function loadKeypair(privateKey: string): Keypair {
-  // try to load privateKey as a filepath
-  let loadedKey: Uint8Array;
-  if (fs.existsSync(privateKey)) {
-    privateKey = fs.readFileSync(privateKey).toString();
+  if (!tx || tx.meta?.err) {
+    throw new Error('Transaction failed');
   }
 
-  if (privateKey.includes('[') && privateKey.includes(']')) {
-    loadedKey = Uint8Array.from(JSON.parse(privateKey));
-  } else if (privateKey.includes(',')) {
-    loadedKey = Uint8Array.from(privateKey.split(',').map((val) => Number(val)));
-  } else {
-    privateKey = privateKey.replace(/\s/g, '');
-    loadedKey = new Uint8Array(bs58.decode(privateKey));
-  }
-
-  const keypair = Keypair.fromSecretKey(Uint8Array.from(loadedKey));
-  console.log('loaded wallet:', keypair.publicKey.toBase58());
-
-  return keypair;
+  return tx;
 }
 
 export async function getTokenProgram(mintPubkey: PublicKey): Promise<PublicKey> {
@@ -129,7 +122,7 @@ export async function sendTransaction(
   return signature;
 }
 
-export async function jupiterSwap(
+async function jupiterSwap(
   inputMint: string,
   outputMint: string,
   amount: BN,
@@ -143,7 +136,8 @@ export async function jupiterSwap(
   });
 
   console.log('Dynamic slippage bps:', quoteResponse.slippageBps);
-  console.log('Out amount:', quoteResponse.outAmount);
+  const dps = outputMint === NATIVE_MINT_ADDRESS ? LAMPORTS_PER_SOL : 1e6; // TODO
+  console.log(' Out amount:', Number(quoteResponse.outAmount) / dps);
 
   const slippageBps = slippage * 1e4;
   if (quoteResponse.slippageBps > slippageBps) {
@@ -207,10 +201,15 @@ export async function buyToken(
     pumpSdk.fetchFeeConfig(),
   ]);
 
+  let signature: TransactionSignature;
+
   if (buyState.bondingCurve.complete) {
-    const signature = await jupiterSwap(NATIVE_MINT_ADDRESS, mint, lamports, slippage);
-    console.log('txid:', signature);
+    signature = await jupiterSwap(NATIVE_MINT_ADDRESS, mint, lamports, slippage);
   } else {
+    if (tokenProgram.equals(TOKEN_PROGRAM_ID)) {
+      throw new Error('Deprecated Bonding Curve');
+    }
+
     const expectedTokens = getBuyTokenAmountFromSolAmount({
       global,
       feeConfig,
@@ -218,7 +217,12 @@ export async function buyToken(
       bondingCurve: buyState.bondingCurve,
       amount: lamports,
     });
-    console.log('Out amount:', expectedTokens.toNumber());
+    const realSolReserves = buyState.bondingCurve.realSolReserves;
+    const virtualSolReserves = buyState.bondingCurve.virtualSolReserves;
+
+    console.log('    Real MC:', realSolReserves.toNumber() / LAMPORTS_PER_SOL);
+    console.log(' Virtual MC:', virtualSolReserves.toNumber() / LAMPORTS_PER_SOL);
+    console.log(' Out amount:', expectedTokens.toNumber() / 1e6);
 
     const buyIxs = await PUMP_SDK.buyInstructions({
       global,
@@ -231,9 +235,21 @@ export async function buyToken(
       tokenProgram,
     });
 
-    const signature = await sendTransaction(buyIxs);
-    console.log('txid:', signature);
+    signature = await sendTransaction(buyIxs);
   }
+
+  const tx = await getTransactionResponse(signature);
+  const preBalances = tx.meta?.preTokenBalances || [];
+  const postBalances = tx.meta?.postTokenBalances || [];
+  const preBalance =
+    preBalances.find((b) => b.mint === mint && b.owner === wallet.publicKey.toBase58())
+      ?.uiTokenAmount.uiAmount || 0;
+  const postBalance =
+    postBalances.find((b) => b.mint === mint && b.owner === wallet.publicKey.toBase58())
+      ?.uiTokenAmount.uiAmount || 0;
+  console.log('Real amount:', postBalance - preBalance);
+
+  console.log('\nTxid:', signature);
 }
 
 export async function sellToken(
@@ -259,9 +275,10 @@ export async function sellToken(
     pumpSdk.fetchFeeConfig(),
   ]);
 
+  let signature: TransactionSignature;
+
   if (sellState.bondingCurve.complete) {
-    const signature = await jupiterSwap(mint, NATIVE_MINT_ADDRESS, amount, slippage);
-    console.log('txid:', signature);
+    signature = await jupiterSwap(mint, NATIVE_MINT_ADDRESS, amount, slippage);
   } else {
     const expectedLamports = getSellSolAmountFromTokenAmount({
       global,
@@ -270,7 +287,11 @@ export async function sellToken(
       bondingCurve: sellState.bondingCurve,
       amount,
     });
-    console.log('Out amount:', expectedLamports.toNumber());
+    const realSolReserves = sellState.bondingCurve.realSolReserves;
+    const virtualSolReserves = sellState.bondingCurve.virtualSolReserves;
+    console.log('    Real MC:', realSolReserves.toNumber() / LAMPORTS_PER_SOL);
+    console.log(' Virtual MC:', virtualSolReserves.toNumber() / LAMPORTS_PER_SOL);
+    console.log(' Out amount:', expectedLamports.toNumber() / LAMPORTS_PER_SOL);
 
     const sellIxs = await PUMP_SDK.sellInstructions({
       global,
@@ -285,7 +306,53 @@ export async function sellToken(
       tokenProgram,
     });
 
-    const signature = await sendTransaction(sellIxs);
-    console.log('txid:', signature);
+    signature = await sendTransaction(sellIxs);
   }
+
+  const tx = await getTransactionResponse(signature);
+  const preBalance = tx.meta?.preBalances[0] || 0;
+  const postBalance = tx.meta?.postBalances[0] || 0;
+  console.log('Real amount:', (postBalance - preBalance) / LAMPORTS_PER_SOL);
+
+  console.log('\nTxid:', signature);
+}
+
+export async function depositPrivacyPool(amount: number, mint: string = NATIVE_MINT_ADDRESS) {
+  if (mint === NATIVE_MINT_ADDRESS) {
+    const { tx } = await privacy.deposit({
+      lamports: Math.floor(amount * LAMPORTS_PER_SOL),
+    });
+    console.log('Txid:', tx);
+
+    const { lamports } = await privacy.getPrivateBalance();
+    console.log('Private balance:', lamports / LAMPORTS_PER_SOL);
+    console.log('\n');
+  } else {
+    throw new Error('SPL deposit is not supported');
+  }
+}
+
+export async function withdrawPrivacyPool(
+  recipient: string,
+  amount: number,
+  mint: string = NATIVE_MINT_ADDRESS,
+) {
+  if (mint === NATIVE_MINT_ADDRESS) {
+    const { tx } = await privacy.withdraw({
+      lamports: Math.floor(amount * LAMPORTS_PER_SOL),
+      recipientAddress: recipient,
+    });
+    console.log('Txid:', tx);
+
+    const { lamports } = await privacy.getPrivateBalance();
+    console.log('Private balance:', lamports / LAMPORTS_PER_SOL);
+    console.log('\n');
+  } else {
+    throw new Error('SPL deposit is not supported');
+  }
+}
+
+export async function fetchSolendPools(market: string) {
+  // SolendActionCore.buildDepositObligationCollateralTxns()
+  // await LendingInstruction.DepositObligationCollateral
 }
