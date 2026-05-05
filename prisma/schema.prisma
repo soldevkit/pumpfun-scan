@@ -1,0 +1,64 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Profile {
+  id             Int     @id @default(autoincrement())
+  address        String  @unique @db.VarChar(50)
+  name           String  @db.VarChar(32)
+  balance        Decimal @default(0.0) @db.Decimal(19, 9)
+  privateBalance Decimal @default(0.0) @map("prv_balance") @db.Decimal(19, 9)
+
+  trades Trade[]
+
+  @@map("profiles")
+}
+
+model Token {
+  id          Int     @id @default(autoincrement())
+  address     String  @unique @db.VarChar(50)
+  name        String  @db.VarChar(32)
+  symbol      String  @db.VarChar(10)
+  description String? @db.VarChar(512)
+  icon        String? @db.VarChar(512)
+  website     String? @db.VarChar(100)
+  telegram    String? @db.VarChar(100)
+  x           String? @db.VarChar(100)
+
+  trades Trade[]
+
+  @@map("tokens")
+}
+
+model Trade {
+  signature    String         @id @db.VarChar(100)
+  profileId    Int
+  tokenId      Int
+  direction    TradeDirection @default(Buy)
+  amount       Decimal        @db.Decimal(16, 6)
+  amountSol    Decimal        @map("amount_sol") @db.Decimal(19, 9)
+  marketcap    Decimal        @db.Decimal(19, 4)
+  marketcapSol Decimal        @map("marketcap_sol") @db.Decimal(19, 9)
+  slippageBps  Int            @map("slippage_bps") @db.SmallInt
+  createdAt    DateTime       @map("created_at")
+
+  profile Profile @relation(fields: [profileId], references: [id])
+  token   Token   @relation(fields: [tokenId], references: [id])
+
+  @@map("trades")
+}
+
+enum TradeDirection {
+  Buy
+  Sell
+}
