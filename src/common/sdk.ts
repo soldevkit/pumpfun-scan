@@ -8,6 +8,8 @@ import {
   getFinalPosition,
   getInitPositionIx,
   getOperateIx,
+  MAX_REPAY_AMOUNT,
+  MAX_WITHDRAW_AMOUNT,
 } from '@jup-ag/lend/borrow';
 import { Client as JupiterLendClient } from '@jup-ag/lend-read';
 import { SolendActionCore } from '@solendprotocol/solend-sdk';
@@ -50,13 +52,15 @@ import { loadKeypair } from './helper';
 import { AddressLookupTableAccount } from '@solana/web3.js';
 import { SystemProgram } from '@solana/web3.js';
 import { getUserLendingPositionByAsset } from '@jup-ag/lend/earn';
+import { Signer } from '@solana/web3.js';
 
-const ZERO = new BN(0);
 const NATIVE_MINT_ADDRESS = NATIVE_MINT.toBase58();
-const RPC_URL = 'https://willie-l4msmu-fast-mainnet.helius-rpc.com';
+const PUMP_CREATE_ALT_PUBKEY = new PublicKey('7mFD2mUtRS65XstiSAvCJuYmdesZoQwCwRJhq1p3eRMe');
+const ZERO = new BN(0);
 
 // RPC connection
-const connection = new Connection(RPC_URL, 'confirmed');
+const RPC_URL = 'https://willie-l4msmu-fast-mainnet.helius-rpc.com';
+export const connection = new Connection(RPC_URL, 'confirmed');
 const wallet = loadKeypair(process.env.WALLET_KEYPAIR!);
 
 const pumpSdk = new OnlinePumpSdk(connection);
@@ -103,14 +107,49 @@ export async function getTokenAmount(mint: string): Promise<BN> {
   }
 }
 
-export async function sendTransaction(
-  ixs: TransactionInstruction[],
-  addressLookupTableAccounts?: AddressLookupTableAccount[],
-): Promise<TransactionSignature> {
-  // --- build + send tx ---
+async function sendTransaction(
+  transaction: VersionedTransaction,
+  debug: boolean = false,
+): Promise<TransactionSignature | Base64URLString> {
+  const buff = transaction.serialize();
+
+  if (debug) return Buffer.from(buff).toString('base64');
+
+  const signature = await connection.sendRawTransaction(buff, {
+    skipPreflight: false,
+    maxRetries: 2,
+  });
+
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
 
-  const finalIxs: TransactionInstruction[] = [...ixs];
+  await connection.confirmTransaction(
+    {
+      signature,
+      blockhash,
+      lastValidBlockHeight,
+    },
+    'confirmed',
+  );
+
+  return signature;
+}
+
+export async function buildAndSendTransaction({
+  instructions,
+  addressLookupTableAccounts,
+  signers,
+  debug = false,
+}: {
+  instructions: TransactionInstruction[];
+  addressLookupTableAccounts?: AddressLookupTableAccount[];
+  signers?: Signer[];
+  debug?: boolean;
+}): Promise<TransactionSignature | Base64URLString> {
+  const { blockhash } = await connection.getLatestBlockhash('confirmed');
+
+  const finalIxs: TransactionInstruction[] = instructions.filter(
+    (ix) => ix.programId.toBase58() !== COMPUTE_BUDGET_PROGRAM_ADDRESS,
+  );
 
   const computeIxs = [
     ComputeBudgetProgram.setComputeUnitLimit({
@@ -125,7 +164,7 @@ export async function sendTransaction(
     new TransactionMessage({
       payerKey: wallet.publicKey,
       recentBlockhash: blockhash,
-      instructions: [...computeIxs, ...ixs],
+      instructions: [...computeIxs, ...instructions],
     }).compileToV0Message(addressLookupTableAccounts),
   );
   const { value: sim } = await connection.simulateTransaction(txSim, { sigVerify: false });
@@ -145,29 +184,14 @@ export async function sendTransaction(
     new TransactionMessage({
       payerKey: wallet.publicKey,
       recentBlockhash: blockhash,
-      instructions: [...computeIxs, ...ixs],
+      instructions: [...computeIxs, ...instructions],
     }).compileToV0Message(addressLookupTableAccounts),
   );
   tx.sign([wallet]);
 
-  // console.log('Tx:', Buffer.from(tx.serialize()).toString('base64'));
+  if (signers) tx.sign(signers);
 
-  // send (fast path)
-  const signature = await connection.sendRawTransaction(tx.serialize(), {
-    skipPreflight: false,
-    maxRetries: 2,
-  });
-
-  await connection.confirmTransaction(
-    {
-      signature,
-      blockhash,
-      lastValidBlockHeight,
-    },
-    'confirmed',
-  );
-
-  return signature;
+  return sendTransaction(tx, debug);
 }
 
 async function jupiterSwap(
@@ -201,34 +225,19 @@ async function jupiterSwap(
     },
   });
 
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+  const { blockhash } = await connection.getLatestBlockhash();
   const txBuff = Buffer.from(swapTransaction, 'base64');
   const tx = VersionedTransaction.deserialize(txBuff);
   tx.message.recentBlockhash = blockhash;
   tx.sign([wallet]);
 
-  // send (fast path)
-  const signature = await connection.sendRawTransaction(tx.serialize(), {
-    skipPreflight: false,
-    maxRetries: 2,
-  });
-
-  await connection.confirmTransaction(
-    {
-      signature,
-      blockhash,
-      lastValidBlockHeight,
-    },
-    'confirmed',
-  );
-
-  return signature;
+  return sendTransaction(tx);
 }
 
 export async function swap(
   inputMint: string,
   outputMint: string,
-  amount: number,
+  amount?: number,
   slippage: number = 0.05,
 ) {
   let decimals: number;
@@ -239,9 +248,72 @@ export async function swap(
     [, decimals] = await getTokenProgramId(inputMintPubkey);
   }
 
-  const inputAmount = new BN(tokenUiAmountToAmount(amount, decimals));
+  let inputAmount: BN;
+  if (!amount) {
+    inputAmount = await getTokenAmount(inputMint);
+  } else {
+    inputAmount = new BN(tokenUiAmountToAmount(amount, decimals));
+  }
 
   const signature = await jupiterSwap(inputMint, outputMint, inputAmount, decimals, slippage);
+  console.log('Txid:', signature);
+}
+
+// TODO:
+export async function createToken(mintKeypair: string) {
+  // const keypair = loadKeypair(mintKeypair);
+
+  const global = await pumpSdk.fetchGlobal();
+  const { value: altAccount } = await connection.getAddressLookupTable(PUMP_CREATE_ALT_PUBKEY);
+
+  // const createIxs = await PUMP_SDK.createV2AndBuyInstructions({
+  //   global,
+  //   creator: wallet.publicKey,
+  //   user: wallet.publicKey,
+  //   mint: keypair.publicKey,
+  //   name: 'not worth selling',
+  //   symbol: 'W0RTH',
+  //   uri: 'https://gateway.irys.xyz/3Lu5KaYBjMJFazzUtbQnDgsSaW3JC3oSttF5RTPA1fpm',
+  //   mayhemMode: false,
+  //   cashback: false,
+  //   amount: new BN(2.1e12), // 2.1m
+  //   solAmount: new BN(0.1e9), // 0.1 SOL
+  // });
+
+  // const signature = await buildAndSendTransaction({
+  //   instructions: createIxs,
+  //   signers: [keypair],
+  //   addressLookupTableAccounts: [altAccount!],
+  //   // debug: true,
+  // });
+  // console.log('Txid:', signature);
+
+  // const configIx = await PUMP_SDK.createFeeSharingConfig({
+  //   creator: wallet.publicKey,
+  //   mint: new PublicKey('i6WHmUrxjVDNyDzL8ivMmR8xNkZxdZmgPGP4HHLpump'),
+  //   pool: null,
+  // });
+  const feesIx = await PUMP_SDK.updateFeeShares({
+    authority: wallet.publicKey,
+    currentShareholders: [wallet.publicKey],
+    mint: new PublicKey('i6WHmUrxjVDNyDzL8ivMmR8xNkZxdZmgPGP4HHLpump'),
+    newShareholders: [
+      {
+        address: wallet.publicKey,
+        shareBps: 10000,
+      },
+      // {
+      //   address: new PublicKey('6sBHF7ogmCEMasR4ijPWsD3aUrZJaP458EzX773sYkzp'),
+      //   shareBps: 210,
+      // },
+    ],
+  });
+
+  const signature = await buildAndSendTransaction({
+    // instructions: [configIx, feesIx],
+    instructions: [feesIx],
+    addressLookupTableAccounts: [altAccount!],
+  });
   console.log('Txid:', signature);
 }
 
@@ -300,7 +372,7 @@ export async function buyToken(
       tokenProgram: tokenProgramId,
     });
 
-    signature = await sendTransaction(buyIxs);
+    signature = await buildAndSendTransaction({ instructions: buyIxs, debug: true });
   }
 
   const tx = await getTransactionResponse(signature);
@@ -370,7 +442,7 @@ export async function sellToken(
       tokenProgram: tokenProgramId,
     });
 
-    signature = await sendTransaction(sellIxs);
+    signature = await buildAndSendTransaction({ instructions: sellIxs });
   }
 
   const tx = await getTransactionResponse(signature);
@@ -439,13 +511,7 @@ export async function jupiterBorrow(vaultId: number, colAmount: number, debtAmou
 
   // const metadata = await jupiterLend.vault.getVaultMetadata({ vaultId });
   // console.log(metadata?.supplyMintDecimals, metadata?.borrowMintDecimals);
-
-  const { nftId: positionId } = await getInitPositionIx({
-    vaultId,
-    connection,
-    signer: wallet.publicKey,
-  });
-  console.log('Position #:', positionId);
+  // const position = await jupiterLend.vault.getPositionByVaultId(vaultId, 425);
 
   const preIxs: TransactionInstruction[] = [];
   const postIxs: TransactionInstruction[] = [];
@@ -498,18 +564,19 @@ export async function jupiterBorrow(vaultId: number, colAmount: number, debtAmou
     [, borrowDecimals] = await getTokenProgramId(vault.constantViews.borrowToken);
   }
 
-  const { ixs, addressLookupTableAccounts } = await getOperateIx({
+  const { ixs, addressLookupTableAccounts, nftId } = await getOperateIx({
     vaultId,
-    positionId: 425,
-    colAmount: new BN(tokenUiAmountToAmount(colAmount, supplyDecimals)),
+    positionId: 34,
+    colAmount: MAX_WITHDRAW_AMOUNT, // new BN(tokenUiAmountToAmount(colAmount, supplyDecimals)),
     debtAmount: new BN(tokenUiAmountToAmount(debtAmount, borrowDecimals)),
     signer: wallet.publicKey,
     connection,
   });
+  console.log('Position #:', nftId);
 
-  const signature = await sendTransaction(
-    [...preIxs, ...ixs, ...postIxs],
+  const signature = await buildAndSendTransaction({
+    instructions: [...preIxs, ...ixs, ...postIxs],
     addressLookupTableAccounts,
-  );
+  });
   console.log('Txid:', signature);
 }

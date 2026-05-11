@@ -19,8 +19,13 @@ export function loadKeypair(privateKey: string): Keypair {
   }
 
   const keypair = Keypair.fromSecretKey(Uint8Array.from(loadedKey));
-  console.log('Loaded wallet:', keypair.publicKey.toBase58());
-  console.log('\n');
+  // console.log('Loaded wallet:', keypair.publicKey.toBase58());
+  // console.log('\n');
 
   return keypair;
+}
+
+export function sleep(ms: number) {
+  console.log(`Sleeping for ${ms} ms.`);
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

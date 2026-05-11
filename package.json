@@ -9,11 +9,13 @@
     "buy": "node dist/buy.js",
     "sell": "node dist/sell.js",
     "dev": "ts-node src/index.ts",
+    "dev:check": "ts-node src/check.ts",
     "dev:export": "ts-node src/export.ts",
     "dev:deposit": "ts-node src/deposit.ts",
     "dev:withdraw": "ts-node src/withdraw.ts",
-    "dev:swap": "ts-node src/swap.ts",
     "dev:borrow": "ts-node src/borrow.ts",
+    "dev:swap": "ts-node src/swap.ts",
+    "dev:create": "ts-node src/create.ts",
     "dev:buy": "ts-node src/buy.ts",
     "dev:sell": "ts-node src/sell.ts",
     "format": "prettier --write \"src/**/*.ts\""
@@ -44,7 +46,7 @@
   },
   "devDependencies": {
     "@types/bn.js": "^5.2.0",
-    "@types/node": "^25.6.0",
+    "@types/node": "^25.6.2",
     "@typescript-eslint/eslint-plugin": "^8.59.0",
     "@typescript-eslint/parser": "^8.59.0",
     "dotenv": "^17.4.2",
